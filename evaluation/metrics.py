@@ -109,10 +109,21 @@ class Evaluator:
         """
         mean_results = {}
         for metric, values in self.results.items():
-            if values:
-                mean_results[metric] = np.mean(values)
-            else:
+            if not values:
                 mean_results[metric] = 0
+                continue
+            
+            if metric == 'psnr':
+                # --- FIX: 计算平均PSNR时，排除inf值 ---
+                finite_values = [v for v in values if np.isfinite(v)]
+                if finite_values:
+                    mean_results[metric] = np.mean(finite_values)
+                else:
+                    # 如果所有值都是inf，则结果也为inf
+                    mean_results[metric] = float('inf')
+            else:
+                mean_results[metric] = np.mean(values)
+                
         return mean_results
 
     def reset(self):
