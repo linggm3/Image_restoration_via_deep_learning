@@ -31,16 +31,17 @@ def main():
         return
         
     # 指定模型名称为 'unet'，以确保Trainer使用非条件模型的逻辑
-    config['model']['name'] = "unet"
+    config['model']['name'] = "unet_augmented" # 可以给新实验起个名字
     
     # 2. 设置设备
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"将使用设备: {device}")
 
-    # 3. 创建数据加载器
+    # 3. 创建数据加载器 (现在会返回三个)
     print("正在创建数据加载器...")
     # 请确保 config['data']['data_root'] 指向你的 MS-COCO_2014 数据集路径
-    train_loader, val_loader = create_dataloaders(config)
+    train_loader, val_loader, test_loader = create_dataloaders(config)
+    print(f"测试集样本数: {len(test_loader.dataset)}")
     
     # 4. 初始化模型
     print("正在初始化U-Net模型...")
@@ -48,7 +49,7 @@ def main():
         in_channels=config['model']['in_channels'],
         out_channels=config['model']['out_channels'],
         base_channels=config['model']['base_channels'],
-        bilinear=True  # 通常使用双线性插值
+        bilinear=True
     ).to(device)
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"模型初始化完成。参数量: {num_params / 1e6:.2f} M")
@@ -65,11 +66,10 @@ def main():
         weight_decay=config['training']['weight_decay']
     )
     
-    # 余弦退火学习率调度器
     scheduler = lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=config['training']['epochs'],
-        eta_min=1e-6 # 最小学习率
+        eta_min=1e-6
     )
 
     # 7. 初始化训练器
@@ -96,10 +96,8 @@ def main():
 
     print("=" * 50)
     print("训练流程已全部完成！")
+    print("后续步骤：可以在 test_loader 上进行最终的模型评估。")
     print("=" * 50)
 
 if __name__ == '__main__':
-    # 确保你的COCO数据集路径在 'config/unet_config.yaml' 中已正确配置
-    # data:
-    #   data_root: "/path/to/your/train2014"
     main()
