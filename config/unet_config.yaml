@@ -1,0 +1,51 @@
+# config/unet_config.yaml
+model:
+  name: "conditional_unet"
+  in_channels: 3
+  out_channels: 3
+  base_channels: 64
+  num_downs: 5  # 下采样次数
+  use_conditional: true
+  conditioning_method: "adain"  # 'concat' or 'adain'
+  
+data:
+  dataset: "coco"
+  data_root: "/data2/dataset/MS-COCO_2014/train2014"  # 修改为你的路径
+  image_size: 256
+  batch_size: 16
+  num_workers: 4
+  degradations:
+    - type: "gaussian_blur"
+      params:
+        sigma_range: [0.5, 5.0]
+    - type: "histogram_equalization"
+      params:
+        method: "global"
+    - type: "gamma_correction"
+      params:
+        gamma_range: [0.4, 2.5]
+
+training:
+  epochs: 100
+  learning_rate: 0.0002
+  weight_decay: 0.0001
+  lr_scheduler: "cosine"
+  warmup_epochs: 5
+  gradient_clip: 1.0
+  mixed_precision: true
+  
+  # 损失函数权重
+  loss_weights:
+    l1: 1.0
+    perceptual: 0.1
+    gan: 0.0  # GAN loss暂时不用
+    
+  # 验证和保存
+  val_interval: 1000  # 每1000步验证一次
+  save_interval: 5000
+  log_interval: 100
+
+evaluation:
+  metrics: ["psnr", "ssim", "lpips"]
+  save_images: true
+  num_vis_samples: 10
