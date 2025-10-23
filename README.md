@@ -31,7 +31,14 @@ The model (unet_augmented) was trained for 50 epochs on the MS-COCO 2014 dataset
 
 * Best Model: The best model was selected based on the lowest validation LPIPS score, achieving ~0.05.
 
-### trained weights
+### Evaluation Results
+| Metric | Degraded vs Original | Restored vs Original |
+|--------|---------------------|---------------------|
+| PSNR   | 20.6255             | 28.7740             |
+| SSIM   | 0.7532              | 0.9203              |
+| LPIPS  | 0.2378              | 0.0514              |
+
+### Trained Weights
 https://huggingface.co/linggm/Universal_Image_Restoration_Best_U-Net
 
 ### Visual Results
