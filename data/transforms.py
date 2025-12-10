@@ -252,7 +252,7 @@ class DegradationChain:
         # 概率设置: 1种(适中), 2种(最大), 3种(最小)
         # P(1)=0.3, P(2)=0.5, P(3)=0.2
         num_choices = [1, 2, 3]
-        probs = [0.4, 0.5, 0.1]
+        probs = [0.6, 0.3, 0.1]
         
         # 1. 确定要应用几种退化
         num_to_apply = np.random.choice(num_choices, p=probs)

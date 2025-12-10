@@ -24,7 +24,7 @@ data:
   # 退化链配置 - 每种退化都有独立的应用概率
   degradations:
     - type: "motion_blur"
-      probability: 0.5  # 60%概率应用运动模糊
+      probability: 0.6  # 60%概率应用运动模糊
       params:
         kernel_size_range: [5, 25]  # 模糊核大小范围
         angle_range: [-180, 180]        # 运动方向角度范围
@@ -35,17 +35,17 @@ data:
         sigma_range: [0.5, 8.0]  # 高斯核标准差范围
     
     - type: "gaussian_noise"
-      probability: 0.3  # 40%概率应用高斯噪声
+      probability: 0.1  # 40%概率应用高斯噪声
       params:
         noise_std_range: [5, 50]  # 噪声标准差范围
     
     - type: "jpeg_compression"
-      probability: 0.2  # 30%概率应用JPEG压缩
+      probability: 0.1  # 30%概率应用JPEG压缩
       params:
         quality_range: [10, 75]  # JPEG质量范围(越小越模糊)
     
     - type: "downsampling"
-      probability: 0.2  # 30%概率应用下采样
+      probability: 0.1  # 30%概率应用下采样
       params:
         scale_range: [0.25, 0.75]  # 下采样比例范围
 
