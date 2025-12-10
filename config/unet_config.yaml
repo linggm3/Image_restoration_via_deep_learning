@@ -61,7 +61,7 @@ training:
   # 损失函数权重
   loss_weights:
     l1: 1.0
-    perceptual: 0.2
+    perceptual: 0.1
     gan: 0.0
     
   # 验证和保存
