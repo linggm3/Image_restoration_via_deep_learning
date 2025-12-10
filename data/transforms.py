@@ -212,8 +212,7 @@ class DownsamplingTransform(DegradationTransform):
 class DegradationChain:
     """
     退化链：按顺序应用多种退化
-    每种退化都有一定概率被应用
-    如果所有退化都没有被应用，则保底随机选择一种
+    随机选择1-3种退化进行应用，防止过度退化
     """
     def __init__(self, transforms_dict, probabilities=None):
         """
@@ -249,10 +248,38 @@ class DegradationChain:
         applied_degradations = []
         all_params = {}
         
-        # 按顺序尝试应用每种退化
+        # --- 随机选择 1-3 种退化 ---
+        # 概率设置: 1种(适中), 2种(最大), 3种(最小)
+        # P(1)=0.3, P(2)=0.5, P(3)=0.2
+        num_choices = [1, 2, 3]
+        probs = [0.4, 0.5, 0.1]
+        
+        # 1. 确定要应用几种退化
+        num_to_apply = np.random.choice(num_choices, p=probs)
+        # 确保不超过实际可用的退化种类总数
+        num_to_apply = min(num_to_apply, len(self.transform_names))
+        
+        # 2. 确定具体应用哪些退化
+        # 使用配置中的 probabilities 作为权重，这样保留了配置文件的倾向性
+        weights = np.array([self.probabilities.get(name, 0.5) for name in self.transform_names])
+        if weights.sum() > 0:
+            weights = weights / weights.sum() # 归一化
+        else:
+            weights = None # 均匀分布
+            
+        # 不放回采样
+        selected_names = np.random.choice(
+            self.transform_names, 
+            size=num_to_apply, 
+            replace=False, 
+            p=weights
+        )
+        selected_set = set(selected_names)
+        
+        # 3. 按原始顺序应用选中的退化
+        # 保持原始顺序(如先模糊后噪声)通常更符合物理规律
         for name in self.transform_names:
-            prob = self.probabilities.get(name, 0.5)
-            if np.random.random() < prob:
+            if name in selected_set:
                 transform = self.transforms_dict[name]
                 degraded, params = transform.apply(degraded)
                 applied_degradations.append({
@@ -262,8 +289,8 @@ class DegradationChain:
                 })
                 all_params[name] = params
         
-        # 保底机制：如果没有任何退化被应用，随机选择一个
-        if len(applied_degradations) == 0:
+        # 保底机制：理论上 num_to_apply >= 1 不会触发，保留以防万一
+        if len(applied_degradations) == 0 and len(self.transform_names) > 0:
             fallback_name = np.random.choice(self.transform_names)
             transform = self.transforms_dict[fallback_name]
             degraded, params = transform.apply(original)
