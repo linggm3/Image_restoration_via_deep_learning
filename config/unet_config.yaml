@@ -1,38 +1,56 @@
 # config/unet_config.yaml
 model:
-  name: "conditional_unet"
+  name: "unet_blind_restoration"  # 盲恢复模型
   in_channels: 3
   out_channels: 3
   base_channels: 64
-  num_downs: 5  # 下采样次数
-  use_conditional: true
-  conditioning_method: "adain"  # 'concat' or 'adain'
-  
+  num_downs: 5
+  use_conditional: false  # 不使用条件信息，进行盲恢复
+  conditioning_method: "none"  # 不需要条件方法
+  condition_dim: 15  # 保留用于数据集，但模型不使用 
+
 data:
   dataset: "coco"
-  data_root: "/data2/dataset/MS-COCO_2014/train2014"  # 修改为你的路径
+  data_root: "/data2/dataset/MS-COCO_2014/train2014"
   image_size: 256
   batch_size: 32
   num_workers: 16
   
-  # --- 新增：数据增强配置 ---
+  # 数据增强配置
   augmentations:
     horizontal_flip_prob: 0.5
-    random_crop_scale: [0.8, 1.0] # 随机裁剪的尺寸范围
+    random_crop_scale: [0.8, 1.0]
     
+  # 退化链配置 - 每种退化都有独立的应用概率
   degradations:
+    - type: "motion_blur"
+      probability: 0.5  # 60%概率应用运动模糊
+      params:
+        kernel_size_range: [5, 25]  # 模糊核大小范围
+        angle_range: [-180, 180]        # 运动方向角度范围
+    
     - type: "gaussian_blur"
+      probability: 0.4  # 50%概率应用高斯模糊
       params:
-        sigma_range: [0.5, 5.0]
-    - type: "histogram_equalization"
+        sigma_range: [0.5, 8.0]  # 高斯核标准差范围
+    
+    - type: "gaussian_noise"
+      probability: 0.3  # 40%概率应用高斯噪声
       params:
-        method: "global"
-    - type: "gamma_correction"
+        noise_std_range: [5, 50]  # 噪声标准差范围
+    
+    - type: "jpeg_compression"
+      probability: 0.2  # 30%概率应用JPEG压缩
       params:
-        gamma_range: [0.4, 2.5]
+        quality_range: [10, 75]  # JPEG质量范围(越小越模糊)
+    
+    - type: "downsampling"
+      probability: 0.2  # 30%概率应用下采样
+      params:
+        scale_range: [0.25, 0.75]  # 下采样比例范围
 
 training:
-  epochs: 50
+  epochs: 100
   learning_rate: 0.0002
   weight_decay: 0.0001
   lr_scheduler: "cosine"
@@ -43,11 +61,11 @@ training:
   # 损失函数权重
   loss_weights:
     l1: 1.0
-    perceptual: 0.1
-    gan: 0.0  # GAN loss暂时不用
+    perceptual: 0.2
+    gan: 0.0
     
   # 验证和保存
-  val_interval: 1000  # 每1000步验证一次
+  val_interval: 1000
   save_interval: 5000
   log_interval: 100
 

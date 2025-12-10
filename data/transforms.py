@@ -5,172 +5,280 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 from PIL import Image
 import cv2
+from io import BytesIO
 
 class DegradationTransform:
     """退化算子基类"""
     def __init__(self):
         self.name = "base"
+        self.degradation_id = -1
         
-    def apply(self, image):
+    def apply(self, image, params=None):
         """
         应用退化
         Args:
-            image: PIL Image或numpy array (H, W, C), RGB格式, 值域[0, 255]
+            image: numpy array (H, W, C), RGB格式, 值域[0, 255]
+            params: 可选的退化参数，如果为None则随机采样
         Returns:
             degraded_image: numpy array (H, W, C)
-            condition_vector: 条件向量
+            actual_params: 实际使用的退化参数
         """
         raise NotImplementedError
+
+
+class MotionBlurTransform(DegradationTransform):
+    """运动模糊退化（模拟手抖、相机移动等）"""
+    def __init__(self, kernel_size_range=(5, 25), angle_range=(0, 180)):
+        super().__init__()
+        self.name = "motion_blur"
+        self.degradation_id = 0
+        self.kernel_size_range = kernel_size_range
+        self.angle_range = angle_range
         
-    def get_condition_dim(self):
-        """返回条件向量的维度"""
-        raise NotImplementedError
+    def _get_motion_blur_kernel(self, kernel_size, angle):
+        """生成运动模糊核"""
+        # 确保kernel_size为奇数
+        kernel_size = kernel_size if kernel_size % 2 == 1 else kernel_size + 1
+        kernel = np.zeros((kernel_size, kernel_size))
+        
+        # 在中心绘制一条线
+        center = kernel_size // 2
+        angle_rad = np.deg2rad(angle)
+        
+        for i in range(kernel_size):
+            offset = i - center
+            x = int(center + offset * np.cos(angle_rad))
+            y = int(center + offset * np.sin(angle_rad))
+            if 0 <= x < kernel_size and 0 <= y < kernel_size:
+                kernel[y, x] = 1
+        
+        # 归一化
+        kernel = kernel / np.sum(kernel) if np.sum(kernel) > 0 else kernel
+        return kernel
+        
+    def apply(self, image, params=None):
+        """应用运动模糊"""
+        if isinstance(image, Image.Image):
+            image = np.array(image)
+        
+        # 参数采样
+        if params is None:
+            kernel_size = np.random.randint(self.kernel_size_range[0], self.kernel_size_range[1] + 1)
+            angle = np.random.uniform(self.angle_range[0], self.angle_range[1])
+        else:
+            kernel_size = int(params.get('kernel_size', 15))
+            angle = params.get('angle', 45.0)
+        
+        # 生成运动模糊核
+        kernel = self._get_motion_blur_kernel(kernel_size, angle)
+        
+        # 对每个通道应用卷积
+        degraded = cv2.filter2D(image, -1, kernel)
+        degraded = np.clip(degraded, 0, 255).astype(np.uint8)
+        
+        actual_params = {
+            'kernel_size': float(kernel_size),
+            'angle': float(angle)
+        }
+        
+        return degraded, actual_params
 
 
 class GaussianBlurTransform(DegradationTransform):
-    """高斯模糊退化"""
-    def __init__(self, sigma_range=(0.5, 5.0)):
+    """高斯模糊退化（模拟失焦）"""
+    def __init__(self, sigma_range=(0.5, 8.0)):
         super().__init__()
         self.name = "gaussian_blur"
+        self.degradation_id = 1
         self.sigma_range = sigma_range
         
-    def apply(self, image):
-        """
-        应用高斯模糊
-        """
-        # 转换为numpy array
+    def apply(self, image, params=None):
+        """应用高斯模糊"""
         if isinstance(image, Image.Image):
             image = np.array(image)
         
-        # 随机采样sigma值
-        sigma = np.random.uniform(self.sigma_range[0], self.sigma_range[1])
+        # 参数采样
+        if params is None:
+            sigma = np.random.uniform(self.sigma_range[0], self.sigma_range[1])
+        else:
+            sigma = params.get('sigma', 2.0)
         
-        # 对每个通道分别应用高斯模糊
-        degraded = np.zeros_like(image, dtype=np.float32)
-        for c in range(image.shape[2]):
-            degraded[:, :, c] = gaussian_filter(image[:, :, c], sigma=sigma)
-        
+        # 应用高斯模糊
+        degraded = cv2.GaussianBlur(image, (0, 0), sigma)
         degraded = np.clip(degraded, 0, 255).astype(np.uint8)
         
-        # 构造条件向量: [op_type_id, sigma, 0, 0]
-        # op_type_id=0 表示高斯模糊
-        condition = np.array([0.0, sigma, 0.0, 0.0], dtype=np.float32)
+        actual_params = {'sigma': float(sigma)}
         
-        return degraded, condition
-    
-    def get_condition_dim(self):
-        return 4  # [op_type, param1, param2, param3]
+        return degraded, actual_params
 
 
-class HistogramEqualizationTransform(DegradationTransform):
-    """直方图均衡化退化"""
-    def __init__(self, method='global'):
+class GaussianNoiseTransform(DegradationTransform):
+    """高斯噪声退化（模拟低光环境）"""
+    def __init__(self, noise_std_range=(5, 50)):
         super().__init__()
-        self.name = "histogram_equalization"
-        self.method = method
+        self.name = "gaussian_noise"
+        self.degradation_id = 2
+        self.noise_std_range = noise_std_range
         
-    def apply(self, image):
-        """
-        应用直方图均衡化
-        """
+    def apply(self, image, params=None):
+        """应用高斯噪声"""
         if isinstance(image, Image.Image):
             image = np.array(image)
         
-        # 转换到YCrCb色彩空间，只对Y通道均衡化
-        img_yuv = cv2.cvtColor(image, cv2.COLOR_RGB2YCrCb)
+        # 参数采样
+        if params is None:
+            noise_std = np.random.uniform(self.noise_std_range[0], self.noise_std_range[1])
+        else:
+            noise_std = params.get('noise_std', 15.0)
         
-        if self.method == 'global':
-            # 全局直方图均衡化
-            img_yuv[:, :, 0] = cv2.equalizeHist(img_yuv[:, :, 0])
-        elif self.method == 'adaptive':
-            # 自适应直方图均衡化（CLAHE）
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            img_yuv[:, :, 0] = clahe.apply(img_yuv[:, :, 0])
+        # 生成高斯噪声
+        noise = np.random.normal(0, noise_std, image.shape)
+        degraded = image.astype(np.float32) + noise
+        degraded = np.clip(degraded, 0, 255).astype(np.uint8)
         
-        # 转换回RGB
-        degraded = cv2.cvtColor(img_yuv, cv2.COLOR_YCrCb2RGB)
+        actual_params = {'noise_std': float(noise_std)}
         
-        # 条件向量: [op_type_id, method_id, 0, 0]
-        # op_type_id=1 表示直方图均衡
-        # method_id: 0=global, 1=adaptive
-        method_id = 0.0 if self.method == 'global' else 1.0
-        condition = np.array([1.0, method_id, 0.0, 0.0], dtype=np.float32)
-        
-        return degraded, condition
-    
-    def get_condition_dim(self):
-        return 4
+        return degraded, actual_params
 
 
-class GammaCorrectionTransform(DegradationTransform):
-    """伽马校正退化"""
-    def __init__(self, gamma_range=(0.4, 2.5)):
+class JPEGCompressionTransform(DegradationTransform):
+    """JPEG压缩退化（模拟画质损失）"""
+    def __init__(self, quality_range=(10, 75)):
         super().__init__()
-        self.name = "gamma_correction"
-        self.gamma_range = gamma_range
+        self.name = "jpeg_compression"
+        self.degradation_id = 3
+        self.quality_range = quality_range
         
-    def apply(self, image):
-        """
-        应用伽马校正
-        """
+    def apply(self, image, params=None):
+        """应用JPEG压缩"""
         if isinstance(image, Image.Image):
             image = np.array(image)
         
-        # 随机采样gamma值
-        gamma = np.random.uniform(self.gamma_range[0], self.gamma_range[1])
+        # 参数采样
+        if params is None:
+            quality = np.random.randint(self.quality_range[0], self.quality_range[1] + 1)
+        else:
+            quality = int(params.get('quality', 50))
         
-        # 归一化到[0, 1]
-        img_normalized = image.astype(np.float32) / 255.0
+        # 转换为PIL Image
+        pil_image = Image.fromarray(image)
         
-        # 应用伽马校正
-        degraded = np.power(img_normalized, gamma)
+        # 使用BytesIO模拟JPEG压缩
+        buffer = BytesIO()
+        pil_image.save(buffer, format='JPEG', quality=quality)
+        buffer.seek(0)
+        compressed_image = Image.open(buffer)
+        degraded = np.array(compressed_image)
         
-        # 转换回[0, 255]
-        degraded = (degraded * 255).astype(np.uint8)
+        actual_params = {'quality': float(quality)}
         
-        # 条件向量: [op_type_id, gamma, 0, 0]
-        # op_type_id=2 表示伽马校正
-        condition = np.array([2.0, gamma, 0.0, 0.0], dtype=np.float32)
-        
-        return degraded, condition
-    
-    def get_condition_dim(self):
-        return 4
+        return degraded, actual_params
 
 
-class RandomDegradation:
-    """随机选择一种退化算子应用"""
-    def __init__(self, transforms_list):
+class DownsamplingTransform(DegradationTransform):
+    """下采样退化（模拟分辨率不足）"""
+    def __init__(self, scale_range=(0.25, 0.75)):
+        super().__init__()
+        self.name = "downsampling"
+        self.degradation_id = 4
+        self.scale_range = scale_range
+        
+    def apply(self, image, params=None):
+        """应用下采样"""
+        if isinstance(image, Image.Image):
+            image = np.array(image)
+        
+        h, w = image.shape[:2]
+        
+        # 参数采样
+        if params is None:
+            scale = np.random.uniform(self.scale_range[0], self.scale_range[1])
+        else:
+            scale = params.get('scale', 0.5)
+        
+        # 下采样
+        new_h, new_w = int(h * scale), int(w * scale)
+        downsampled = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        
+        # 上采样回原始尺寸
+        degraded = cv2.resize(downsampled, (w, h), interpolation=cv2.INTER_LINEAR)
+        degraded = np.clip(degraded, 0, 255).astype(np.uint8)
+        
+        actual_params = {'scale': float(scale)}
+        
+        return degraded, actual_params
+
+
+class DegradationChain:
+    """
+    退化链：按顺序应用多种退化
+    每种退化都有一定概率被应用
+    如果所有退化都没有被应用，则保底随机选择一种
+    """
+    def __init__(self, transforms_dict, probabilities=None):
         """
         Args:
-            transforms_list: 退化算子列表
+            transforms_dict: 字典，{退化名称: 退化实例}
+            probabilities: 字典，{退化名称: 应用概率}，如果为None则使用默认概率
         """
-        self.transforms = transforms_list
-        self.num_transforms = len(transforms_list)
+        self.transforms_dict = transforms_dict
+        self.transform_names = list(transforms_dict.keys())
         
+        # 设置默认概率
+        if probabilities is None:
+            self.probabilities = {name: 0.5 for name in self.transform_names}
+        else:
+            self.probabilities = probabilities
+            
     def __call__(self, image):
         """
-        随机应用一种退化
+        应用退化链
         Returns:
             degraded_image: torch.Tensor (C, H, W), 值域[0, 1]
             original_image: torch.Tensor (C, H, W), 值域[0, 1]
-            condition: torch.Tensor (condition_dim,)
-            info: dict, 包含退化类型和参数信息（用于分析）
+            condition: torch.Tensor (max_condition_dim,)
+            info: dict，包含详细的退化信息
         """
-        # 随机选择一个退化算子
-        transform_idx = np.random.randint(0, self.num_transforms)
-        transform = self.transforms[transform_idx]
-        
         # 保存原图
         if isinstance(image, Image.Image):
             original = np.array(image)
         else:
             original = image.copy()
         
-        # 应用退化
-        degraded, condition = transform.apply(image)
+        degraded = original.copy()
+        applied_degradations = []
+        all_params = {}
         
-        # 转换为torch tensor并归一化到[0, 1]
+        # 按顺序尝试应用每种退化
+        for name in self.transform_names:
+            prob = self.probabilities.get(name, 0.5)
+            if np.random.random() < prob:
+                transform = self.transforms_dict[name]
+                degraded, params = transform.apply(degraded)
+                applied_degradations.append({
+                    'name': name,
+                    'id': transform.degradation_id,
+                    'params': params
+                })
+                all_params[name] = params
+        
+        # 保底机制：如果没有任何退化被应用，随机选择一个
+        if len(applied_degradations) == 0:
+            fallback_name = np.random.choice(self.transform_names)
+            transform = self.transforms_dict[fallback_name]
+            degraded, params = transform.apply(original)
+            applied_degradations.append({
+                'name': fallback_name,
+                'id': transform.degradation_id,
+                'params': params
+            })
+            all_params[fallback_name] = params
+        
+        # 构造条件向量
+        # 格式: [deg1_flag, deg1_param1, deg1_param2, ..., deg2_flag, deg2_param1, ...]
+        condition = self._build_condition_vector(applied_degradations)
+        
+        # 转换为torch tensor
         degraded_tensor = torch.from_numpy(degraded).float() / 255.0
         original_tensor = torch.from_numpy(original).float() / 255.0
         
@@ -178,41 +286,114 @@ class RandomDegradation:
         degraded_tensor = degraded_tensor.permute(2, 0, 1)
         original_tensor = original_tensor.permute(2, 0, 1)
         
-        condition_tensor = torch.from_numpy(condition)
+        condition_tensor = torch.from_numpy(condition).float()
         
-        # 记录退化信息（用于分析）
+        # 记录退化信息
         info = {
-            'degradation_type': transform.name,
-            'degradation_idx': transform_idx,
+            'applied_degradations': applied_degradations,
+            'num_degradations': len(applied_degradations),
+            'degradation_names': [d['name'] for d in applied_degradations],
+            'all_params': all_params,
             'condition': condition.tolist()
         }
         
         return degraded_tensor, original_tensor, condition_tensor, info
+    
+    def _build_condition_vector(self, applied_degradations):
+        """
+        构建条件向量
+        格式：每种退化占3个位置 [flag, param1, param2]
+        总维度: 5 * 3 = 15
+        """
+        condition = np.zeros(15, dtype=np.float32)
+        
+        # 为每种退化类型分配位置
+        degradation_positions = {
+            'motion_blur': 0,      # [0:3]
+            'gaussian_blur': 3,    # [3:6]
+            'gaussian_noise': 6,   # [6:9]
+            'jpeg_compression': 9, # [9:12]
+            'downsampling': 12     # [12:15]
+        }
+        
+        for deg_info in applied_degradations:
+            name = deg_info['name']
+            params = deg_info['params']
+            pos = degradation_positions[name]
+            
+            # 设置flag为1表示该退化被应用
+            condition[pos] = 1.0
+            
+            # 填充参数（归一化到合理范围）
+            if name == 'motion_blur':
+                condition[pos + 1] = params['kernel_size'] / 25.0  # 归一化到[0, 1]
+                condition[pos + 2] = params['angle'] / 180.0
+            elif name == 'gaussian_blur':
+                condition[pos + 1] = params['sigma'] / 8.0
+            elif name == 'gaussian_noise':
+                condition[pos + 1] = params['noise_std'] / 50.0
+            elif name == 'jpeg_compression':
+                condition[pos + 1] = params['quality'] / 100.0
+            elif name == 'downsampling':
+                condition[pos + 1] = params['scale']
+        
+        return condition
 
 
-# 便捷函数：创建所有退化算子
-def create_degradation_transforms(config=None):
+def create_degradation_chain(config=None):
     """
-    根据配置创建退化算子列表
+    根据配置创建退化链
     """
     if config is None:
         # 默认配置
-        transforms = [
-            GaussianBlurTransform(sigma_range=(0.5, 5.0)),
-            HistogramEqualizationTransform(method='global'),
-            GammaCorrectionTransform(gamma_range=(0.4, 2.5))
-        ]
+        transforms_dict = {
+            'motion_blur': MotionBlurTransform(),
+            'gaussian_blur': GaussianBlurTransform(),
+            'gaussian_noise': GaussianNoiseTransform(),
+            'jpeg_compression': JPEGCompressionTransform(),
+            'downsampling': DownsamplingTransform()
+        }
+        probabilities = {name: 0.5 for name in transforms_dict.keys()}
     else:
-        transforms = []
-        for deg_config in config['degradations']:
-            if deg_config['type'] == 'gaussian_blur':
-                sigma_range = deg_config['params']['sigma_range']
-                transforms.append(GaussianBlurTransform(sigma_range=sigma_range))
-            elif deg_config['type'] == 'histogram_equalization':
-                method = deg_config['params']['method']
-                transforms.append(HistogramEqualizationTransform(method=method))
-            elif deg_config['type'] == 'gamma_correction':
-                gamma_range = deg_config['params']['gamma_range']
-                transforms.append(GammaCorrectionTransform(gamma_range=gamma_range))
+        transforms_dict = {}
+        probabilities = {}
+        
+        for deg_config in config.get('degradations', []):
+            deg_type = deg_config['type']
+            params = deg_config.get('params', {})
+            prob = deg_config.get('probability', 0.5)
+            
+            if deg_type == 'motion_blur':
+                transform = MotionBlurTransform(
+                    kernel_size_range=params.get('kernel_size_range', [5, 25]),
+                    angle_range=params.get('angle_range', [0, 180])
+                )
+            elif deg_type == 'gaussian_blur':
+                transform = GaussianBlurTransform(
+                    sigma_range=params.get('sigma_range', [0.5, 8.0])
+                )
+            elif deg_type == 'gaussian_noise':
+                transform = GaussianNoiseTransform(
+                    noise_std_range=params.get('noise_std_range', [5, 50])
+                )
+            elif deg_type == 'jpeg_compression':
+                transform = JPEGCompressionTransform(
+                    quality_range=params.get('quality_range', [10, 75])
+                )
+            elif deg_type == 'downsampling':
+                transform = DownsamplingTransform(
+                    scale_range=params.get('scale_range', [0.25, 0.75])
+                )
+            else:
+                continue
+            
+            transforms_dict[deg_type] = transform
+            probabilities[deg_type] = prob
     
-    return transforms
+    return DegradationChain(transforms_dict, probabilities)
+
+
+# 兼容旧版本的函数
+def create_degradation_transforms(config=None):
+    """保持向后兼容"""
+    return create_degradation_chain(config)

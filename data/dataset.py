@@ -2,32 +2,32 @@
 
 import os
 import torch
-from torch.utils.data import Dataset, DataLoader, random_split, Subset
+from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import torchvision.transforms as T
 import numpy as np
-from .transforms import RandomDegradation, create_degradation_transforms
+from .transforms import create_degradation_chain
 
 class DynamicDegradationDataset(Dataset):
     """
     动态生成退化图像的数据集
-    每次__getitem__都实时应用随机退化
+    每次__getitem__都实时应用随机退化链
     """
     def __init__(self,
                  root_dir,
-                 image_paths, # 修改：直接接收图像路径列表
+                 image_paths,
                  image_size=256,
                  degradation_config=None,
                  split='train',
-                 augmentations=None): # 新增：接收数据增强配置
+                 augmentations=None):
         """
         Args:
-            root_dir: 图像文件夹根路径.
-            image_paths: 该数据集使用的图像路径列表.
-            image_size: 输出图像尺寸.
-            degradation_config: 退化配置字典.
-            split: 'train', 'val', or 'test'.
-            augmentations: 应用于训练集的数据增强变换.
+            root_dir: 图像文件夹根路径
+            image_paths: 该数据集使用的图像路径列表
+            image_size: 输出图像尺寸
+            degradation_config: 退化配置字典
+            split: 'train', 'val', or 'test'
+            augmentations: 应用于训练集的数据增强变换
         """
         self.root_dir = root_dir
         self.image_paths = image_paths
@@ -35,11 +35,10 @@ class DynamicDegradationDataset(Dataset):
         self.split = split
         self.augmentations = augmentations
         
-        # 创建退化算子
-        self.degradations = create_degradation_transforms(degradation_config)
-        self.random_degradation = RandomDegradation(self.degradations)
+        # 创建退化链
+        self.degradation_chain = create_degradation_chain(degradation_config)
         
-        # 图像预处理（调整大小和中心裁剪）- 现在只用于验证和测试
+        # 图像预处理（调整大小和中心裁剪）- 用于验证和测试
         self.base_transform = T.Compose([
             T.Resize(int(image_size * 1.12)),
             T.CenterCrop(image_size),
@@ -63,33 +62,34 @@ class DynamicDegradationDataset(Dataset):
         else:
             image = self.base_transform(image)
 
-        # 实时应用随机退化
-        degraded, original, condition, info = self.random_degradation(image)
+        # 实时应用退化链
+        degraded, original, condition, info = self.degradation_chain(image)
         
         return {
             'degraded': degraded,
             'original': original,
             'condition': condition,
-            'degradation_type': info['degradation_type'],
-            'degradation_idx': info['degradation_idx'],
-            'degradation_params': info['condition'],
+            'degradation_info': info,
             'image_path': img_path
         }
 
+
 def custom_collate_fn(batch):
-    # 此函数保持不变
+    """自定义的collate函数，用于批处理"""
     degraded = torch.stack([item['degraded'] for item in batch])
     original = torch.stack([item['original'] for item in batch])
     condition = torch.stack([item['condition'] for item in batch])
-    degradation_types = [item['degradation_type'] for item in batch]
-    degradation_indices = [item['degradation_idx'] for item in batch]
-    degradation_params = [item['degradation_params'] for item in batch]
+    degradation_info = [item['degradation_info'] for item in batch]
     image_paths = [item['image_path'] for item in batch]
+    
     return {
-        'degraded': degraded, 'original': original, 'condition': condition,
-        'degradation_type': degradation_types, 'degradation_idx': degradation_indices,
-        'degradation_params': degradation_params, 'image_path': image_paths
+        'degraded': degraded,
+        'original': original,
+        'condition': condition,
+        'degradation_info': degradation_info,
+        'image_path': image_paths
     }
+
 
 def create_dataloaders(config, subset_size=None):
     """
@@ -106,6 +106,7 @@ def create_dataloaders(config, subset_size=None):
     
     if subset_size is not None:
         print(f"警告：将使用 {subset_size} 个样本的子集进行操作。")
+        np.random.seed(42)
         np.random.shuffle(all_files)
         all_files = all_files[:subset_size]
 
@@ -113,6 +114,8 @@ def create_dataloaders(config, subset_size=None):
         ext = os.path.splitext(fname)[1].lower()
         if ext in valid_extensions:
             all_image_paths.append(os.path.join(root_dir, fname))
+    
+    print(f"找到 {len(all_image_paths)} 张有效图像")
     
     # 2. 8:1:1 划分数据集
     num_images = len(all_image_paths)
@@ -133,7 +136,10 @@ def create_dataloaders(config, subset_size=None):
     # 3. 创建训练集数据增强
     aug_config = config['data'].get('augmentations', {})
     train_augmentations = T.Compose([
-        T.RandomResizedCrop(config['data']['image_size'], scale=aug_config.get('random_crop_scale', [0.8, 1.0])),
+        T.RandomResizedCrop(
+            config['data']['image_size'], 
+            scale=aug_config.get('random_crop_scale', [0.8, 1.0])
+        ),
         T.RandomHorizontalFlip(p=aug_config.get('horizontal_flip_prob', 0.5)),
     ])
 
@@ -153,7 +159,7 @@ def create_dataloaders(config, subset_size=None):
         image_size=config['data']['image_size'],
         degradation_config=config['data'],
         split='val',
-        augmentations=None # 验证集不使用增强
+        augmentations=None
     )
     
     test_dataset = DynamicDegradationDataset(
@@ -162,25 +168,35 @@ def create_dataloaders(config, subset_size=None):
         image_size=config['data']['image_size'],
         degradation_config=config['data'],
         split='test',
-        augmentations=None # 测试集不使用增强
+        augmentations=None
     )
 
     # 5. 创建数据加载器
     train_loader = DataLoader(
-        train_dataset, batch_size=config['data']['batch_size'], shuffle=True,
-        num_workers=config['data']['num_workers'], pin_memory=True, drop_last=True,
+        train_dataset,
+        batch_size=config['data']['batch_size'],
+        shuffle=True,
+        num_workers=config['data']['num_workers'],
+        pin_memory=True,
+        drop_last=True,
         collate_fn=custom_collate_fn
     )
     
     val_loader = DataLoader(
-        val_dataset, batch_size=config['data']['batch_size'], shuffle=False,
-        num_workers=config['data']['num_workers'], pin_memory=True,
+        val_dataset,
+        batch_size=config['data']['batch_size'],
+        shuffle=False,
+        num_workers=config['data']['num_workers'],
+        pin_memory=True,
         collate_fn=custom_collate_fn
     )
 
     test_loader = DataLoader(
-        test_dataset, batch_size=config['data']['batch_size'], shuffle=False,
-        num_workers=config['data']['num_workers'], pin_memory=True,
+        test_dataset,
+        batch_size=config['data']['batch_size'],
+        shuffle=False,
+        num_workers=config['data']['num_workers'],
+        pin_memory=True,
         collate_fn=custom_collate_fn
     )
     
