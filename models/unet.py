@@ -4,10 +4,41 @@ import torch
 import torch.nn as nn
 from .layers.conditional_layers import ConditionalAdaIN
 
+class CBAM(nn.Module):
+    def __init__(self, channels, reduction_ratio=16, spatial_kernel=7):
+        super(CBAM, self).__init__()
+        # 通道注意力
+        self.channel_attention = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, channels // reduction_ratio, kernel_size=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // reduction_ratio, channels, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+        
+        # 空间注意力
+        self.spatial_attention = nn.Sequential(
+            nn.Conv2d(2, 1, kernel_size=spatial_kernel, padding=spatial_kernel//2),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x):
+        # 通道注意力
+        channel_att = self.channel_attention(x)
+        x = x * channel_att
+        
+        # 空间注意力
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        spatial_att = self.spatial_attention(torch.cat([avg_out, max_out], dim=1))
+        x = x * spatial_att
+        
+        return x
+
 class DoubleConv(nn.Module):
     """(卷积 => [BN] => ReLU) * 2"""
     # (保持不变)
-    def __init__(self, in_channels, out_channels, mid_channels=None):
+    def __init__(self, in_channels, out_channels, mid_channels=None, use_cbam=True):
         super().__init__()
         if not mid_channels:
             mid_channels = out_channels
@@ -19,9 +50,15 @@ class DoubleConv(nn.Module):
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True)
         )
+        self.use_cbam = use_cbam
+        if use_cbam:
+            self.cbam=CBAM(out_channels)
 
     def forward(self, x):
-        return self.double_conv(x)
+        x = self.double_conv(x)
+        if self.use_cbam:
+            x = self.cbam(x)
+        return x
 
 
 class ConditionalDoubleConv(nn.Module):
@@ -50,14 +87,14 @@ class ConditionalDoubleConv(nn.Module):
 class Down(nn.Module):
     """下采样模块：最大池化 + (条件)双卷积"""
 
-    def __init__(self, in_channels, out_channels, condition_dim=None):
+    def __init__(self, in_channels, out_channels, condition_dim=None, use_cbam=True):
         super().__init__()
         use_conditional = condition_dim is not None
         
         if use_conditional:
             conv_block = ConditionalDoubleConv(in_channels, out_channels, condition_dim)
         else:
-            conv_block = DoubleConv(in_channels, out_channels)
+            conv_block = DoubleConv(in_channels, out_channels, use_cbam=use_cbam)
 
         self.maxpool_conv = nn.Sequential(
             nn.MaxPool2d(2),
@@ -76,7 +113,7 @@ class Down(nn.Module):
 class Up(nn.Module):
     """上采样模块：转置卷积 + 跳跃连接 + (条件)双卷积"""
 
-    def __init__(self, in_channels, out_channels, condition_dim=None, bilinear=True):
+    def __init__(self, in_channels, out_channels, condition_dim=None, bilinear=True, use_cbam=True):
         super().__init__()
         use_conditional = condition_dim is not None
 
@@ -86,13 +123,13 @@ class Up(nn.Module):
             if use_conditional:
                 self.conv = ConditionalDoubleConv(in_channels, out_channels, condition_dim, in_channels // 2)
             else:
-                self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
+                self.conv = DoubleConv(in_channels, out_channels, in_channels // 2, use_cbam=use_cbam)
         else:
             self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
             if use_conditional:
                 self.conv = ConditionalDoubleConv(in_channels, out_channels, condition_dim)
             else:
-                self.conv = DoubleConv(in_channels, out_channels)
+                self.conv = DoubleConv(in_channels, out_channels, use_cbam=use_cbam)
 
     def forward(self, x1, x2, c=None):
         # x1是来自上采样路径的特征图，x2是来自编码器路径的跳跃连接特征图
@@ -176,18 +213,18 @@ class UNet(nn.Module):
         self.bilinear = bilinear
         
         # 编码器（下采样路径）
-        self.inc = DoubleConv(in_channels, base_channels)
-        self.down1_block = Down(base_channels, base_channels * 2)
-        self.down2_block = Down(base_channels * 2, base_channels * 4)
-        self.down3_block = Down(base_channels * 4, base_channels * 8)
+        self.inc = DoubleConv(in_channels, base_channels, use_cbam=True)
+        self.down1_block = Down(base_channels, base_channels * 2 ,use_cbam=True)
+        self.down2_block = Down(base_channels * 2, base_channels * 4, use_cbam=True)
+        self.down3_block = Down(base_channels * 4, base_channels * 8, use_cbam=True)
         factor = 2 if bilinear else 1
-        self.down4_block = Down(base_channels * 8, base_channels * 16 // factor)
+        self.down4_block = Down(base_channels * 8, base_channels * 16 // factor, use_cbam=True)
 
         # 解码器（上采样路径）
-        self.up1 = Up(base_channels * 16, base_channels * 8 // factor, bilinear=bilinear)
-        self.up2 = Up(base_channels * 8, base_channels * 4 // factor, bilinear=bilinear)
-        self.up3 = Up(base_channels * 4, base_channels * 2 // factor, bilinear=bilinear)
-        self.up4 = Up(base_channels * 2, base_channels, bilinear=bilinear)
+        self.up1 = Up(base_channels * 16, base_channels * 8 // factor, bilinear=bilinear, use_cbam=True)
+        self.up2 = Up(base_channels * 8, base_channels * 4 // factor, bilinear=bilinear, use_cbam=True)
+        self.up3 = Up(base_channels * 4, base_channels * 2 // factor, bilinear=bilinear, use_cbam=True)
+        self.up4 = Up(base_channels * 2, base_channels, bilinear=bilinear, use_cbam=True)
         
         # 输出层
         self.outc = nn.Conv2d(base_channels, out_channels, kernel_size=1)
